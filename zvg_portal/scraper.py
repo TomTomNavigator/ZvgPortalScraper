@@ -3,10 +3,12 @@
 import datetime
 import logging
 import re
+import os
 from typing import Iterator, Dict, Union
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, UnicodeDammit
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from zvg_portal.model import Land, ObjektEntry, RawList, RawEntry, RawAnhang
 from zvg_portal.parser import VerkehrswertParser, VersteigerungsTerminParser, AddressParser
@@ -37,15 +39,29 @@ class ZvgPortal:
             r'letzte Aktualisierung (?P<day>\d{2})-(?P<month>\d{2})-(?P<year>\d{4}) (?P<hour>\d{2}):(?P<minute>\d{2})'
         )
         self._strip_tags_regex = re.compile('<[^<]+?>')
-        self._attachment_link = re.compile(r'\?button=showAnhang&land_abk=nw&file_id=\d+&zvg_id=+\d+')
+        # Make attachment regex generic for all Laender (nw, by, bw, ...)
+        self._attachment_link = re.compile(r'\?button=showAnhang&land_abk=[a-z]{2}&file_id=\d+&zvg_id=+\d+')
         self._address_parser = AddressParser()
         self._verkehrswert_parser = VerkehrswertParser()
         self._versteigerungs_termin_parser = VersteigerungsTerminParser()
+        # Performance/config
+        self._timeout = int(os.environ.get('ZVG_TIMEOUT', '30'))
+        self._max_workers = int(os.environ.get('ZVG_MAX_WORKERS', '8'))
+
+    def _decode_html(self, content: bytes) -> str:
+        """Robustly decode HTML bytes to Unicode (fix common mojibake)."""
+        dammit = UnicodeDammit(content, is_html=True)
+        if dammit.unicode_markup:
+            return dammit.unicode_markup
+        try:
+            return content.decode('utf-8', errors='ignore')
+        except Exception:
+            return content.decode('latin1', errors='ignore')
 
     def get_laender(self) -> Iterator[Land]:
-        response = self._session.get(self.endpoints.form)
+        response = self._session.get(self.endpoints.form, timeout=self._timeout)
         response.raise_for_status()
-        soup = BeautifulSoup(response.content, 'html.parser')
+        soup = BeautifulSoup(self._decode_html(response.content), 'html.parser')
         for select in soup.findAll('select'):
             correct_select = False
             for option in select.select('option'):
@@ -88,7 +104,7 @@ class ZvgPortal:
             yield current_row
 
     def _parse_details(self, entry: ObjektEntry, content: bytes) -> Iterator[Union[ObjektEntry, RawAnhang]]:
-        soup = BeautifulSoup(content.decode('latin1'), 'html.parser')
+        soup = BeautifulSoup(self._decode_html(content), 'html.parser')
         skip_startswith = [
             'index.php?button=',
             '?button=',
@@ -103,7 +119,8 @@ class ZvgPortal:
                 if self._attachment_link.match(href):
                     response = self._session.get(
                         f'{self._base_url}/{href}',
-                        headers={'Referer': f'{self._base_url}/index.php?button=Suchen'}
+                        headers={'Referer': f'{self._base_url}/index.php?button=Suchen'},
+                        timeout=self._timeout,
                     )
                     response.raise_for_status()
                     raw_anhang = RawAnhang(content=response.content)
@@ -181,6 +198,24 @@ class ZvgPortal:
             s = s.replace('  ', ' ')
         return s
 
+    def _normalize_text(self, s: str) -> str:
+        """Normalize common issues: NBSPs, zero-width chars, and UTF-8/Latin-1 mojibake."""
+        if s is None:
+            return s
+        # Normalize NBSPs to regular spaces and remove zero-width space
+        try:
+            s = self._nbsps_to_spaces(s)
+        except Exception:
+            pass
+        s = s.replace('\u202f', ' ').replace('\u200b', '')
+        # Fix typical mojibake (e.g., 'MÃ¤rz' -> 'März')
+        if 'Ã' in s or 'Â' in s:
+            try:
+                s = s.encode('latin1', errors='ignore').decode('utf-8', errors='ignore')
+            except Exception:
+                pass
+        return self._remove_duplicate_spaces(s).strip()
+
     def list(self, land: Land, plz: str = '') -> Iterator[Union[RawList, RawEntry, ObjektEntry, RawAnhang]]:
         params = {'button': 'Suchen', 'all': '1'}
 
@@ -204,14 +239,18 @@ class ZvgPortal:
             'btermin': '',
         }
 
-        response = requests.post(self.endpoints.index, params=params, data=data)
+        response = self._session.post(self.endpoints.index, params=params, data=data, timeout=self._timeout)
         response.raise_for_status()
         last_raw_list = RawList(content=response.content)
         yield last_raw_list
 
-        soup = BeautifulSoup(response.content.decode('latin1'), 'html.parser')
+        soup = BeautifulSoup(self._decode_html(response.content), 'html.parser')
         table_rows = list(self._parse_html_table(soup))
         self._logger.info(f'Found {len(table_rows)} rows for "{land.name}".')
+
+        # Prepare entries and collect detail URLs
+        entries_to_fetch = []
+        immediate_entries = []
         for rows in table_rows:
             entry = ObjektEntry(land_short=land.short, raw_list_sha256=last_raw_list.sha256)
             if 'zvg_id' in rows.keys():
@@ -224,23 +263,27 @@ class ZvgPortal:
                         entry.aktenzeichen = match.group(0)
                         break
             if 'Amtsgericht' in rows.keys():
-                entry.amtsgericht = ' '.join(rows['Amtsgericht'])
+                entry.amtsgericht = self._normalize_text(' '.join(rows['Amtsgericht']))
             if 'Objekt/Lage' in rows.keys():
-                entry.objekt_lage = self._remove_duplicate_spaces(' '.join(rows['Objekt/Lage']))
+                raw_ol = ' '.join(rows['Objekt/Lage'])
+                entry.objekt_lage = self._normalize_text(raw_ol)
                 entry.adresse = self._address_parser.parse(entry.objekt_lage)
                 if entry.adresse is None:
                     self._logger.warning(f'Could not parse address out of: {entry.objekt_lage}')
             if 'Verkehrswert in €' in rows.keys():
                 entry.verkehrswert_in_cent = self._verkehrswert_parser.cents(rows['Verkehrswert in €'][0])
             if 'Termin' in rows.keys():
-                entry.termin_as_str = ' '.join(rows['Termin'])
+                termin_raw = ' '.join(rows['Termin'])
+                entry.termin_as_str = self._normalize_text(termin_raw)
                 if 'wurde aufgehoben' in entry.termin_as_str:
                     entry.wurde_aufgehoben = True
                 else:
+                    # Strip "Uhr" suffix and parse
+                    t_for_parse = re.sub(r'\s*Uhr\.?', '', entry.termin_as_str, flags=re.IGNORECASE).strip()
                     try:
-                        entry.termin_as_date = self._versteigerungs_termin_parser.to_datetime(entry.termin_as_str)
+                        entry.termin_as_date = self._versteigerungs_termin_parser.to_datetime(t_for_parse)
                     except ValueError:
-                        self._logger.error(f'Cannot parse date {entry.termin_as_str}.')
+                        self._logger.warning(f'Cannot parse date {repr(entry.termin_as_str)}.')
 
             for key, tds in rows.items():
                 for td_content in tds if isinstance(tds, list) else []:
@@ -259,21 +302,46 @@ class ZvgPortal:
                 continue
 
             if entry.zvg_id:
-                url = f'{self._base_url}/index.php?button=showZvg&zvg_id={entry.zvg_id}&land_abk={land.short}'
-                response = requests.get(url, headers={'Referer': f'{self._base_url}/index.php?button=Suchen'})
-                response.raise_for_status()
-                last_raw_entry = RawEntry(content=response.content)
-                entry.raw_entry_sha256 = last_raw_entry.sha256
-                yield last_raw_entry
-                if response.content[0:10] == b'\n<!DOCTYPE':
-                    for new_entry in self._parse_details(entry, response.content):
-                        if isinstance(new_entry, ObjektEntry):
-                            entry = new_entry
-                        elif isinstance(new_entry, RawAnhang):
-                            yield new_entry
-                        else:
-                            raise NotImplementedError
-                else:
-                    self._logger.error(f'Response not valid {entry}, could not : {response.content}')
+                entries_to_fetch.append(entry)
+            else:
+                immediate_entries.append(entry)
 
-            yield entry
+        # Yield entries without details immediately
+        for e in immediate_entries:
+            yield e
+
+        # Fetch details concurrently for remaining entries
+        def _fetch_details(e: ObjektEntry):
+            url = f'{self._base_url}/index.php?button=showZvg&zvg_id={e.zvg_id}&land_abk={land.short}'
+            resp = self._session.get(
+                url,
+                headers={'Referer': f'{self._base_url}/index.php?button=Suchen'},
+                timeout=self._timeout,
+            )
+            resp.raise_for_status()
+            raw_entry = RawEntry(content=resp.content)
+            e.raw_entry_sha256 = raw_entry.sha256
+            anhaenge = []
+            if resp.content[0:10] == b'\n<!DOCTYPE':
+                for new_entry in self._parse_details(e, resp.content):
+                    if isinstance(new_entry, ObjektEntry):
+                        e = new_entry
+                    elif isinstance(new_entry, RawAnhang):
+                        anhaenge.append(new_entry)
+                    else:
+                        raise NotImplementedError
+            else:
+                self._logger.error(f'Response not valid {e}, could not : {resp.content[:200]}')
+            return e, raw_entry, anhaenge
+
+        with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
+            futures = [executor.submit(_fetch_details, e) for e in entries_to_fetch]
+            for fut in as_completed(futures):
+                try:
+                    e, raw_entry, anhaenge = fut.result()
+                    yield raw_entry
+                    for a in anhaenge:
+                        yield a
+                    yield e
+                except Exception as ex:
+                    self._logger.warning(f'Skip entry due to detail fetch error: {ex}')
