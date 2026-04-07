@@ -1,0 +1,45 @@
+# VCS
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.egg-info
+.pytest_cache
+.mypy_cache
+
+# Virtualenvs
+.venv
+venv
+env
+
+# IDE / editor
+.idea
+.vscode
+*.swp
+
+# Dev tooling
+.pre-commit-config.yaml
+requirements-dev.txt
+pyproject.toml
+
+# Tests / tools / docs (not needed at runtime)
+tests
+tools
+docs
+README.md
+LICENSE
+
+# Runtime artifacts
+raw
+logs
+*.log
+zvg_entries.json
+zvg_scraper_runs.json
+
+# Docker
+Dockerfile
+.dockerignore

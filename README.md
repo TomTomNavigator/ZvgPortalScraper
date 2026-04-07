@@ -50,6 +50,68 @@ For example like so:
 $ python zvg_portal/app.py --nsqd-address nsqd.example.com --nsqd-port 4151
 ```
 
+## Running with Docker
+
+A `Dockerfile` is provided to build a self-contained image of the scraper. The image is based on `python:3.13-slim-bookworm`, generates the `de_DE` / `de_DE.UTF-8` locales required by the application, and runs as an unprivileged `scraper` user (UID 1000).
+
+Build the image:
+
+```bash
+$ docker build -t zvg-portal-scraper .
+```
+
+Run the scraper as a one-shot job. All CLI flags are forwarded to `app.py`:
+
+```bash
+$ docker run --rm \
+    -v zvg-raw:/data/raw \
+    zvg-portal-scraper \
+    --nsqd-address nsqd.example.com --nsqd-port 4151
+```
+
+The image declares `VOLUME /data/raw` and sets `RAW_DATA_DIRECTORY=/data/raw`, so raw scraped files are written to a mounted volume (named volume `zvg-raw` in the example above — use a bind mount like `-v /host/path:/data/raw` to persist to a host directory instead).
+
+All arguments accepted by `app.py` also have environment variable equivalents (`BASE_URL`, `NSQD_ADDRESS`, `NSQD_PORT`, `CLIENT_SIDE_CRT`, `CLIENT_SIDE_KEY`, `RAW_DATA_DIRECTORY`), which can be passed with `-e`:
+
+```bash
+$ docker run --rm \
+    -v zvg-raw:/data/raw \
+    -e NSQD_ADDRESS=nsqd.example.com \
+    -e NSQD_PORT=4151 \
+    zvg-portal-scraper
+```
+
+### Docker Compose / Portainer stack
+
+The following `docker-compose.yml` can be pasted directly into a Portainer stack (or used with `docker compose`). It assumes the image has been built and tagged locally as `zvg-portal-scraper:latest`, or is available from a registry — replace `image:` accordingly:
+
+```yaml
+services:
+  zvg-scraper:
+    image: zvg-portal-scraper:latest
+    container_name: zvg-scraper
+    environment:
+      NSQD_ADDRESS: nsqd.example.com
+      NSQD_PORT: "4151"
+      # BASE_URL: https://www.zvg-portal.de
+      # CLIENT_SIDE_CRT: /certs/client.crt
+      # CLIENT_SIDE_KEY: /certs/client.key
+    volumes:
+      - zvg-raw:/data/raw
+      # - /host/path/to/certs:/certs:ro
+    restart: "no"
+
+volumes:
+  zvg-raw:
+```
+
+A few things to keep in mind:
+
+- The scraper is a **one-shot job** — the container runs once and then exits. `restart: "no"` reflects that; Compose/Portainer will mark the stack as "exited" after a successful run, which is expected.
+- To run it on a schedule, trigger the stack externally: a host cron job invoking `docker compose run --rm zvg-scraper`, a Kubernetes `CronJob`, or a companion scheduler like [ofelia](https://github.com/mcuadros/ofelia) deployed alongside the stack.
+- If you are building the image from a cloned repo directly in Portainer, replace `image:` with `build: .` and point the stack at the repository.
+- Client-side certificate paths (`CLIENT_SIDE_CRT` / `CLIENT_SIDE_KEY`) must resolve *inside* the container — mount them as a read-only volume as shown in the commented lines.
+
 ## Development
 
 Install the development dependencies (includes runtime deps plus `black`, `isort` and `pre-commit`):
