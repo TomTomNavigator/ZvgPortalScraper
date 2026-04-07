@@ -5,7 +5,7 @@ import hashlib
 import json
 import logging
 from dataclasses import asdict, is_dataclass
-from typing import Optional, Any
+from typing import Any, Optional
 
 import requests.adapters
 from urllib3 import Retry
@@ -15,7 +15,7 @@ from zvg_portal.model import ObjektEntry
 
 class ConsoleHandler(logging.Handler):
     def emit(self, record):
-        print('[%s] %s' % (record.levelname, record.msg))
+        print("[%s] %s" % (record.levelname, record.msg))
 
 
 class CustomEncoder(json.JSONEncoder):
@@ -28,12 +28,12 @@ class CustomEncoder(json.JSONEncoder):
 
 class CustomHTTPAdapter(requests.adapters.HTTPAdapter):
     def __init__(
-            self,
-            fixed_timeout: int = 5,
-            retries: int = 3,
-            backoff_factor: float = 0.3,
-            status_forcelist=(500, 502, 504),
-            pool_maxsize: Optional[int] = None
+        self,
+        fixed_timeout: int = 5,
+        retries: int = 3,
+        backoff_factor: float = 0.3,
+        status_forcelist=(500, 502, 504),
+        pool_maxsize: Optional[int] = None,
     ):
         self._fixed_timeout = fixed_timeout
         retry_strategy = Retry(
@@ -43,20 +43,23 @@ class CustomHTTPAdapter(requests.adapters.HTTPAdapter):
             backoff_factor=backoff_factor,
             status_forcelist=status_forcelist,
         )
-        kwargs = {'max_retries': retry_strategy}
+        kwargs = {"max_retries": retry_strategy}
         if pool_maxsize is not None:
-            kwargs['pool_maxsize'] = pool_maxsize
+            kwargs["pool_maxsize"] = pool_maxsize
         super().__init__(**kwargs)
 
     def send(self, *args, **kwargs):
-        if kwargs['timeout'] is None:
-            kwargs['timeout'] = self._fixed_timeout
+        if kwargs["timeout"] is None:
+            kwargs["timeout"] = self._fixed_timeout
         return super(CustomHTTPAdapter, self).send(*args, **kwargs)
 
 
 class IdFactory:
     @staticmethod
     def from_objekt(objekt: ObjektEntry) -> str:
-        return hashlib.sha256(
-            json.dumps(objekt, indent=0, cls=CustomEncoder, sort_keys=True).encode('utf-8')
-        ).hexdigest()[:8]
+        data = json.loads(json.dumps(objekt, indent=0, cls=CustomEncoder, sort_keys=True).encode("utf-8"))
+        for ignore_key in ["_key", "_id", "inserted_at", "raw_list_sha256", "raw_entry_sha256"]:
+            if ignore_key in data.keys():
+                del data[ignore_key]
+
+        return hashlib.sha256(json.dumps(data, indent=0, sort_keys=True).encode("utf-8")).hexdigest()[:12]
