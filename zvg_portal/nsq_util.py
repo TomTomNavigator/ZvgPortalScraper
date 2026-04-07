@@ -25,11 +25,10 @@ class Nsq:
         return self.publish(topic, json.dumps(message))
 
     def publish(self, topic: str, message: str) -> None:
-        self.publish_bytes(topic, message.encode('utf-8'))
+        self.publish_bytes(topic, message.encode("utf-8"))
 
     def publish_bytes(self, topic: str, message: bytes) -> None:
         response = self._session.post(
-            F'http://{self._nsqd_address}:{self._nsqd_write_port}/pub?topic={topic}',
-            data=message
+            f"http://{self._nsqd_address}:{self._nsqd_write_port}/pub?topic={topic}", data=message
         )
         response.raise_for_status()

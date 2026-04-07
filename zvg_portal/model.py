@@ -4,7 +4,7 @@ import datetime
 import hashlib
 import uuid
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import List, Optional
 
 
 class Sha256Mixin:

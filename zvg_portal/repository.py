@@ -30,6 +30,6 @@ class RawRepository:
             if size_in_bytes:
                 assert size_in_bytes == len(content)
                 return False
-        with open(path, 'wb') as fp:
+        with open(path, "wb") as fp:
             fp.write(content)
         return True
