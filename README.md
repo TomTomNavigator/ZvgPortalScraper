@@ -52,20 +52,38 @@ $ python zvg_portal/app.py --nsqd-address nsqd.example.com --nsqd-port 4151
 
 ## Running with Docker
 
-A `Dockerfile` is provided to build a self-contained image of the scraper. The image is based on `python:3.13-slim-bookworm`, generates the `de_DE` / `de_DE.UTF-8` locales required by the application, and runs as an unprivileged `scraper` user (UID 1000).
+A container image is published to the GitHub Container Registry on every version tag:
 
-Build the image:
+```
+ghcr.io/larsborn/zvgportalscraper
+```
+
+The image is based on `python:3.13-slim-bookworm`, generates the `de_DE` / `de_DE.UTF-8` locales required by the application, and runs as an unprivileged `scraper` user (UID 1000).
+
+### Pull the pre-built image
+
+```bash
+$ docker pull ghcr.io/larsborn/zvgportalscraper:latest
+```
+
+Tags follow the release version. For example, pushing tag `v1.2.3` publishes the image as `1.2.3`, `1.2`, `1`, `latest`, and `sha-<short>`. Pin a specific version in production rather than relying on `latest`.
+
+### Build the image locally (alternative)
+
+If you would rather build from source (e.g. for local changes), the repository ships a `Dockerfile`:
 
 ```bash
 $ docker build -t zvg-portal-scraper .
 ```
 
-Run the scraper as a one-shot job. All CLI flags are forwarded to `app.py`:
+### Run the scraper
+
+Run it as a one-shot job. All CLI flags are forwarded to `app.py`:
 
 ```bash
 $ docker run --rm \
     -v zvg-raw:/data/raw \
-    zvg-portal-scraper \
+    ghcr.io/larsborn/zvgportalscraper:latest \
     --nsqd-address nsqd.example.com --nsqd-port 4151
 ```
 
@@ -78,17 +96,17 @@ $ docker run --rm \
     -v zvg-raw:/data/raw \
     -e NSQD_ADDRESS=nsqd.example.com \
     -e NSQD_PORT=4151 \
-    zvg-portal-scraper
+    ghcr.io/larsborn/zvgportalscraper:latest
 ```
 
 ### Docker Compose / Portainer stack
 
-The following `docker-compose.yml` can be pasted directly into a Portainer stack (or used with `docker compose`). It assumes the image has been built and tagged locally as `zvg-portal-scraper:latest`, or is available from a registry — replace `image:` accordingly:
+The following `docker-compose.yml` pulls the published image from GHCR and can be pasted directly into a Portainer stack (or used with `docker compose`):
 
 ```yaml
 services:
   zvg-scraper:
-    image: zvg-portal-scraper:latest
+    image: ghcr.io/larsborn/zvgportalscraper:latest
     container_name: zvg-scraper
     environment:
       NSQD_ADDRESS: nsqd.example.com
@@ -109,7 +127,8 @@ A few things to keep in mind:
 
 - The scraper is a **one-shot job** — the container runs once and then exits. `restart: "no"` reflects that; Compose/Portainer will mark the stack as "exited" after a successful run, which is expected.
 - To run it on a schedule, trigger the stack externally: a host cron job invoking `docker compose run --rm zvg-scraper`, a Kubernetes `CronJob`, or a companion scheduler like [ofelia](https://github.com/mcuadros/ofelia) deployed alongside the stack.
-- If you are building the image from a cloned repo directly in Portainer, replace `image:` with `build: .` and point the stack at the repository.
+- Pin a specific version (e.g. `ghcr.io/larsborn/zvgportalscraper:0.1.0`) in production instead of `:latest` so stack redeployments are reproducible.
+- If you would rather build from the cloned repo directly in Portainer, replace `image:` with `build: .` and point the stack at the repository.
 - Client-side certificate paths (`CLIENT_SIDE_CRT` / `CLIENT_SIDE_KEY`) must resolve *inside* the container — mount them as a read-only volume as shown in the commented lines.
 
 ## Development
