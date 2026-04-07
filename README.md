@@ -49,3 +49,23 @@ For example like so:
 ```bash
 $ python zvg_portal/app.py --nsqd-address nsqd.example.com --nsqd-port 4151
 ```
+
+## Development
+
+Install the development dependencies (includes runtime deps plus `black`, `isort` and `pre-commit`):
+
+```bash
+$ pip install -r requirements-dev.txt
+```
+
+Then install the git hook so formatters run automatically on every commit:
+
+```bash
+$ pre-commit install
+```
+
+Code style is enforced by [black](https://github.com/psf/black) and [isort](https://github.com/pycqa/isort) (config in `pyproject.toml`, line length 120). To format the entire codebase manually:
+
+```bash
+$ pre-commit run --all-files
+```
